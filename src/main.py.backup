@@ -1,0 +1,627 @@
+# Working src/main.py with correct FastMCP implementation
+
+import asyncio
+import logging
+import os
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.core.config import Settings
+from src.core.logging_config import setup_logging
+from src.core.models import TestInstruction, TestPlan, ExecutionResult
+from src.core.exceptions import E2ETestingError, ValidationError
+
+# Initialize settings and logging
+settings = Settings()
+logger = setup_logging(settings)
+
+# Global state storage (will be replaced with proper state management later)
+_active_sessions: Dict[str, Dict[str, Any]] = {}
+
+# =====================================
+# FastMCP Implementation
+# =====================================
+
+try:
+    from mcp.server.fastmcp import FastMCP
+    
+    # Create FastMCP server instance
+    app = FastMCP(
+        name=settings.MCP_SERVER_NAME,
+        version=settings.MCP_SERVER_VERSION
+    )
+    
+    @app.tool()
+    async def parse_test_instructions(
+        prompt: str,
+        url: str = "",
+        username: str = "",
+        password: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Parse natural language test instructions into structured test plan
+        
+        Args:
+            prompt: Natural language description of the test scenario
+            url: Target application URL (optional if included in prompt)
+            username: Login username (optional if included in prompt)
+            password: Login password (optional if included in prompt)
+        
+        Returns:
+            Structured test plan with steps and metadata
+        """
+        try:
+            logger.info(f"Parsing test instructions: {prompt[:100]}...")
+            
+            # Create test instruction object
+            instruction = TestInstruction(
+                prompt=prompt,
+                url=url or "https://example.com",  # Default for POC
+                username=username or "demo_user",
+                password=password or "demo_pass"
+            )
+            
+            # Parse instruction (placeholder for now - will implement LLM parsing later)
+            test_plan = await _parse_instructions_to_plan(instruction)
+            
+            # Store in session
+            session_id = f"session_{len(_active_sessions) + 1}"
+            _active_sessions[session_id] = {
+                "instruction": instruction,
+                "test_plan": test_plan,
+                "status": "planned",
+                "created_at": asyncio.get_event_loop().time()
+            }
+            
+            logger.info(f"Successfully parsed instructions into {len(test_plan.steps)} steps")
+            
+            return {
+                "session_id": session_id,
+                "status": "success",
+                "test_plan": test_plan.dict(),
+                "message": f"Successfully parsed {len(test_plan.steps)} test steps"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error parsing instructions: {str(e)}")
+            raise E2ETestingError(f"Failed to parse instructions: {str(e)}")
+
+    @app.tool()
+    async def execute_test_plan(session_id: str) -> Dict[str, Any]:
+        """
+        Execute a previously parsed test plan
+        
+        Args:
+            session_id: Session ID from parse_test_instructions
+        
+        Returns:
+            Execution results with status and details
+        """
+        try:
+            if session_id not in _active_sessions:
+                raise ValidationError(f"Session {session_id} not found")
+            
+            session = _active_sessions[session_id]
+            test_plan = TestPlan(**session["test_plan"])
+            
+            logger.info(f"Starting execution of test plan for session {session_id}")
+            
+            # Execute test plan (placeholder implementation)
+            execution_result = await _execute_test_workflow(test_plan)
+            
+            # Update session status
+            session["status"] = "completed" if execution_result.success else "failed"
+            session["execution_result"] = execution_result
+            session["completed_at"] = asyncio.get_event_loop().time()
+            
+            logger.info(f"Test execution completed for session {session_id}: {execution_result.success}")
+            
+            return {
+                "session_id": session_id,
+                "status": "success",
+                "execution_result": execution_result.dict(),
+                "message": f"Test execution {'completed successfully' if execution_result.success else 'failed'}"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error executing test plan: {str(e)}")
+            raise E2ETestingError(f"Failed to execute test plan: {str(e)}")
+
+    @app.tool()
+    async def get_session_status(session_id: str) -> Dict[str, Any]:
+        """
+        Get status of a test session
+        
+        Args:
+            session_id: Session ID to check
+        
+        Returns:
+            Session status and details
+        """
+        try:
+            if session_id not in _active_sessions:
+                raise ValidationError(f"Session {session_id} not found")
+            
+            session = _active_sessions[session_id]
+            
+            return {
+                "session_id": session_id,
+                "status": session["status"],
+                "created_at": session["created_at"],
+                "completed_at": session.get("completed_at"),
+                "test_plan_steps": len(session["test_plan"]["steps"]) if "test_plan" in session else 0,
+                "message": f"Session {session_id} is {session['status']}"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting session status: {str(e)}")
+            raise E2ETestingError(f"Failed to get session status: {str(e)}")
+
+    @app.tool()
+    async def list_active_sessions() -> Dict[str, Any]:
+        """
+        List all active test sessions
+        
+        Returns:
+            List of active sessions with basic info
+        """
+        try:
+            sessions = []
+            for session_id, session_data in _active_sessions.items():
+                sessions.append({
+                    "session_id": session_id,
+                    "status": session_data["status"],
+                    "created_at": session_data["created_at"],
+                    "steps_count": len(session_data.get("test_plan", {}).get("steps", []))
+                })
+            
+            return {
+                "status": "success",
+                "sessions": sessions,
+                "total_sessions": len(sessions),
+                "message": f"Found {len(sessions)} active sessions"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error listing sessions: {str(e)}")
+            raise E2ETestingError(f"Failed to list sessions: {str(e)}")
+
+    # Use FastMCP's built-in run method
+    USE_FASTMCP = True
+
+except ImportError as e:
+    logger.warning(f"FastMCP not available, falling back to basic MCP: {e}")
+    USE_FASTMCP = False
+
+# =====================================
+# Fallback Basic MCP Implementation
+# =====================================
+
+if not USE_FASTMCP:
+    import json
+    from mcp.server import Server
+    from mcp.types import Tool, TextContent
+    
+    # Create basic MCP server
+    server = Server(settings.MCP_SERVER_NAME)
+    
+    # Define tools
+    @server.list_tools()
+    async def list_tools() -> List[Tool]:
+        """List available tools"""
+        return [
+            Tool(
+                name="parse_test_instructions",
+                description="Parse natural language test instructions into structured test plan",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string", "description": "Natural language test description"},
+                        "url": {"type": "string", "description": "Target application URL"},
+                        "username": {"type": "string", "description": "Login username"},
+                        "password": {"type": "string", "description": "Login password"}
+                    },
+                    "required": ["prompt"]
+                }
+            ),
+            Tool(
+                name="execute_test_plan",
+                description="Execute a previously parsed test plan",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "string", "description": "Session ID from parse_test_instructions"}
+                    },
+                    "required": ["session_id"]
+                }
+            ),
+            Tool(
+                name="get_session_status",
+                description="Get status of a test session",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "string", "description": "Session ID to check"}
+                    },
+                    "required": ["session_id"]
+                }
+            ),
+            Tool(
+                name="list_active_sessions",
+                description="List all active test sessions",
+                inputSchema={
+                    "type": "object",
+                    "properties": {}
+                }
+            )
+        ]
+    
+    @server.call_tool()
+    async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Call a tool with the given arguments"""
+        try:
+            if name == "parse_test_instructions":
+                result = await _tool_parse_test_instructions(**arguments)
+            elif name == "execute_test_plan":
+                result = await _tool_execute_test_plan(**arguments)
+            elif name == "get_session_status":
+                result = await _tool_get_session_status(**arguments)
+            elif name == "list_active_sessions":
+                result = await _tool_list_active_sessions(**arguments)
+            else:
+                result = {"error": f"Unknown tool: {name}"}
+            
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            
+        except Exception as e:
+            logger.error(f"Tool execution error: {str(e)}")
+            return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+# =====================================
+# Tool Implementation Functions
+# =====================================
+
+async def _tool_parse_test_instructions(prompt: str, url: str = "", username: str = "", password: str = "") -> Dict[str, Any]:
+    """Tool implementation for parse_test_instructions"""
+    try:
+        logger.info(f"Parsing test instructions: {prompt[:100]}...")
+        
+        # Create test instruction object
+        instruction = TestInstruction(
+            prompt=prompt,
+            url=url or "https://example.com",
+            username=username or "demo_user",
+            password=password or "demo_pass"
+        )
+        
+        # Parse instruction
+        test_plan = await _parse_instructions_to_plan(instruction)
+        
+        # Store in session
+        session_id = f"session_{len(_active_sessions) + 1}"
+        _active_sessions[session_id] = {
+            "instruction": instruction,
+            "test_plan": test_plan,
+            "status": "planned",
+            "created_at": asyncio.get_event_loop().time()
+        }
+        
+        logger.info(f"Successfully parsed instructions into {len(test_plan.steps)} steps")
+        
+        return {
+            "session_id": session_id,
+            "status": "success",
+            "test_plan": test_plan.dict(),
+            "message": f"Successfully parsed {len(test_plan.steps)} test steps"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error parsing instructions: {str(e)}")
+        return {"error": f"Failed to parse instructions: {str(e)}"}
+
+async def _tool_execute_test_plan(session_id: str) -> Dict[str, Any]:
+    """Tool implementation for execute_test_plan"""
+    try:
+        if session_id not in _active_sessions:
+            return {"error": f"Session {session_id} not found"}
+        
+        session = _active_sessions[session_id]
+        test_plan = TestPlan(**session["test_plan"])
+        
+        logger.info(f"Starting execution of test plan for session {session_id}")
+        
+        # Execute test plan
+        execution_result = await _execute_test_workflow(test_plan)
+        
+        # Update session status
+        session["status"] = "completed" if execution_result.success else "failed"
+        session["execution_result"] = execution_result
+        session["completed_at"] = asyncio.get_event_loop().time()
+        
+        logger.info(f"Test execution completed for session {session_id}: {execution_result.success}")
+        
+        return {
+            "session_id": session_id,
+            "status": "success",
+            "execution_result": execution_result.dict(),
+            "message": f"Test execution {'completed successfully' if execution_result.success else 'failed'}"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error executing test plan: {str(e)}")
+        return {"error": f"Failed to execute test plan: {str(e)}"}
+
+async def _tool_get_session_status(session_id: str) -> Dict[str, Any]:
+    """Tool implementation for get_session_status"""
+    try:
+        if session_id not in _active_sessions:
+            return {"error": f"Session {session_id} not found"}
+        
+        session = _active_sessions[session_id]
+        
+        return {
+            "session_id": session_id,
+            "status": session["status"],
+            "created_at": session["created_at"],
+            "completed_at": session.get("completed_at"),
+            "test_plan_steps": len(session["test_plan"]["steps"]) if "test_plan" in session else 0,
+            "message": f"Session {session_id} is {session['status']}"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting session status: {str(e)}")
+        return {"error": f"Failed to get session status: {str(e)}"}
+
+async def _tool_list_active_sessions() -> Dict[str, Any]:
+    """Tool implementation for list_active_sessions"""
+    try:
+        sessions = []
+        for session_id, session_data in _active_sessions.items():
+            # Fix: Handle both TestPlan objects and dict objects
+            test_plan = session_data.get("test_plan")
+            if test_plan:
+                if hasattr(test_plan, 'steps'):
+                    # TestPlan object
+                    steps_count = len(test_plan.steps)
+                elif isinstance(test_plan, dict) and 'steps' in test_plan:
+                    # Dictionary with steps
+                    steps_count = len(test_plan['steps'])
+                else:
+                    steps_count = 0
+            else:
+                steps_count = 0
+            
+            sessions.append({
+                "session_id": session_id,
+                "status": session_data.get("status", "unknown"),
+                "created_at": session_data.get("created_at", 0),
+                "steps_count": steps_count
+            })
+        
+        return {
+            "status": "success",
+            "sessions": sessions,
+            "total_sessions": len(sessions),
+            "message": f"Found {len(sessions)} active sessions"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing sessions: {str(e)}")
+        return {"error": f"Failed to list sessions: {str(e)}"}
+    """Tool implementation for list_active_sessions"""
+    try:
+        sessions = []
+        for session_id, session_data in _active_sessions.items():
+            sessions.append({
+                "session_id": session_id,
+                "status": session_data["status"],
+                "created_at": session_data["created_at"],
+                "steps_count": len(session_data.get("test_plan", {}).get("steps", []))
+            })
+        
+        return {
+            "status": "success",
+            "sessions": sessions,
+            "total_sessions": len(sessions),
+            "message": f"Found {len(sessions)} active sessions"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing sessions: {str(e)}")
+        return {"error": f"Failed to list sessions: {str(e)}"}
+
+# =====================================
+# Helper Functions
+# =====================================
+
+async def _parse_instructions_to_plan(instruction: TestInstruction) -> TestPlan:
+    """Parse natural language instructions into structured test plan"""
+    # Simple pattern matching for demo purposes
+    steps = []
+    
+    # Always start with navigation
+    steps.append({
+        "action": "navigate",
+        "target": instruction.url,
+        "description": f"Navigate to {instruction.url}"
+    })
+    
+    # Add login if credentials provided
+    if instruction.username and instruction.password:
+        steps.extend([
+            {
+                "action": "fill",
+                "target": "username field",
+                "value": instruction.username,
+                "description": "Fill username field"
+            },
+            {
+                "action": "fill", 
+                "target": "password field",
+                "value": instruction.password,
+                "description": "Fill password field"
+            },
+            {
+                "action": "click",
+                "target": "login button",
+                "description": "Click login button"
+            }
+        ])
+    
+    # Parse prompt for additional actions (basic keyword detection)
+    prompt_lower = instruction.prompt.lower()
+    
+    if "click" in prompt_lower:
+        steps.append({
+            "action": "click",
+            "target": "button or link",
+            "description": "Click on specified element"
+        })
+    
+    if "fill" in prompt_lower or "enter" in prompt_lower:
+        steps.append({
+            "action": "fill",
+            "target": "input field",
+            "value": "test data",
+            "description": "Fill form field with data"
+        })
+    
+    if "verify" in prompt_lower or "check" in prompt_lower:
+        steps.append({
+            "action": "verify",
+            "target": "page content",
+            "description": "Verify expected content is present"
+        })
+    
+    return TestPlan(
+        name=f"Test Plan for {instruction.url}",
+        description=instruction.prompt,
+        steps=steps
+    )
+
+async def _execute_test_workflow(test_plan: TestPlan) -> ExecutionResult:
+    """Execute test workflow (placeholder implementation)"""
+    
+    logger.info(f"Executing test plan: {test_plan.name}")
+    
+    # Simulate test execution
+    executed_steps = []
+    success = True
+    
+    for i, step in enumerate(test_plan.steps):
+        try:
+            # Simulate step execution delay
+            await asyncio.sleep(0.1)
+            
+            step_result = {
+                "step_number": i + 1,
+                "action": step["action"],
+                "target": step["target"],
+                "status": "success",
+                "message": f"Successfully executed {step['action']} on {step['target']}",
+                "timestamp": asyncio.get_event_loop().time()
+            }
+            
+            executed_steps.append(step_result)
+            logger.debug(f"Step {i+1} completed: {step['action']}")
+            
+        except Exception as e:
+            step_result = {
+                "step_number": i + 1,
+                "action": step["action"],
+                "target": step["target"],
+                "status": "failed",
+                "message": f"Failed to execute {step['action']}: {str(e)}",
+                "timestamp": asyncio.get_event_loop().time()
+            }
+            executed_steps.append(step_result)
+            success = False
+            logger.error(f"Step {i+1} failed: {str(e)}")
+            break
+    
+    return ExecutionResult(
+        success=success,
+        steps_executed=len(executed_steps),
+        total_steps=len(test_plan.steps),
+        execution_details=executed_steps,
+        message=f"Executed {len(executed_steps)}/{len(test_plan.steps)} steps successfully" if success 
+                else f"Execution failed at step {len(executed_steps)}"
+    )
+
+# =====================================
+# Main Function - Fixed for asyncio loop conflicts
+# =====================================
+
+def run_server():
+    """Run the MCP server with proper asyncio handling"""
+    try:
+        logger.info(f"Starting {settings.MCP_SERVER_NAME} v{settings.MCP_SERVER_VERSION}")
+        logger.info(f"Debug mode: {settings.DEBUG}")
+        
+        # Check if we're already in an asyncio loop
+        try:
+            loop = asyncio.get_running_loop()
+            logger.info("Detected existing asyncio loop, using it")
+            
+            # If we're in an existing loop, create a task
+            if USE_FASTMCP:
+                logger.info("Using FastMCP implementation")
+                task = loop.create_task(app.run())
+            else:
+                logger.info("Using basic MCP implementation")
+                task = loop.create_task(run_basic_server())
+            
+            return task
+            
+        except RuntimeError:
+            # No existing loop, safe to use asyncio.run()
+            logger.info("No existing asyncio loop detected")
+            
+            if USE_FASTMCP:
+                logger.info("Using FastMCP implementation")
+                asyncio.run(app.run())
+            else:
+                logger.info("Using basic MCP implementation")
+                asyncio.run(run_basic_server())
+            
+    except Exception as e:
+        logger.error(f"Server error: {str(e)}", exc_info=True)
+        raise
+
+async def run_basic_server():
+    """Run basic MCP server implementation"""
+    from mcp.server import stdio
+    async with stdio.stdio_server() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())
+
+# Alternative main function for direct asyncio usage
+async def main():
+    """Async main function - use this if calling from another async context"""
+    try:
+        logger.info(f"Starting {settings.MCP_SERVER_NAME} v{settings.MCP_SERVER_VERSION}")
+        logger.info(f"Debug mode: {settings.DEBUG}")
+        
+        if USE_FASTMCP:
+            logger.info("Using FastMCP implementation")
+            await app.run()
+        else:
+            logger.info("Using basic MCP implementation")
+            await run_basic_server()
+            
+    except Exception as e:
+        logger.error(f"Server error: {str(e)}", exc_info=True)
+        raise
+
+if __name__ == "__main__":
+    try:
+        run_server()
+    except KeyboardInterrupt:
+        logger.info("Server shutdown requested")
+    except Exception as e:
+        logger.error(f"Fatal server error: {str(e)}", exc_info=True)
+        sys.exit(1)
