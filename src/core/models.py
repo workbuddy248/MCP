@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, validator
 
 class TestInstruction(BaseModel):
     """Raw test instruction from user"""
@@ -10,7 +10,7 @@ class TestInstruction(BaseModel):
     password: str = Field(default="", description="Login password")
     created_at: datetime = Field(default_factory=datetime.now)
     
-    @validator('url')
+    @field_validator('url')
     def validate_url(cls, v):
         if not v.startswith(('http://', 'https://')):
             return f'https://{v}' if v else 'https://example.com'

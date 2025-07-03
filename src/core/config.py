@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import ConfigDict, Field
 import tempfile
 import sys
 
@@ -51,10 +51,11 @@ class Settings(BaseSettings):
     DATA_DIR: Optional[Path] = Field(default=None, description="Data directory")
     LOGS_DIR: Optional[Path] = Field(default=None, description="Logs directory")
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+    )
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
