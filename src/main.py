@@ -3,7 +3,6 @@
 # =====================================
 
 import asyncio
-from http import server
 import logging
 import os
 import sys
@@ -19,8 +18,6 @@ from src.core.logging_config import setup_logging
 from src.core.models import TestInstruction, TestPlan, ExecutionResult
 from src.core.exceptions import E2ETestingError, ValidationError
 from src.automation import BrowserManager, ActionExecutor, ScreenshotManager
-from src.workflows.enhanced_workflow_manager import EnhancedWorkflowManager
-from src.automation.saas_element_detector import SaaSElementDetector
 
 # Initialize settings and logging
 settings = Settings()
@@ -32,9 +29,6 @@ _active_sessions: Dict[str, Dict[str, Any]] = {}
 # Global browser manager
 _browser_manager = None
 _screenshot_manager = None
-
-# Gloal workflow manager
-_enhanced_workflow_manager = None
 
 # Initialize Azure OpenAI client
 _azure_openai_client = None
@@ -48,14 +42,6 @@ def _get_browser_manager():
             browser_type=settings.BROWSER_TYPE
         )
     return _browser_manager
-
-def _get_enhanced_workflow_manager():
-    """Get or create enhanced workflow manager"""
-    global _enhanced_workflow_manager
-    if _enhanced_workflow_manager is None:
-        _enhanced_workflow_manager = EnhancedWorkflowManager()
-        logger.info("Enhanced workflow manager initialized with DNA Center templates")
-    return _enhanced_workflow_manager
 
 def _get_screenshot_manager():
     """Get or create screenshot manager"""
@@ -100,98 +86,86 @@ try:
         password: str = ""
     ) -> Dict[str, Any]:
         """
-        Parse natural language test instructions with hybrid workflow intelligence
+        Parse natural language test instructions into structured test plan using Azure OpenAI
+        
+        Args:
+            prompt: Natural language description of the test scenario
+            url: Target application URL (optional if included in prompt)
+            username: Login username (optional if included in prompt)
+            password: Login password (optional if included in prompt)
+        
+        Returns:
+            Structured test plan with steps and metadata
         """
         try:
-            logger.info(f"🧠 Parsing with hybrid workflow system: {prompt[:100]}...")
-
-            # Get enhanced workflow manager
-            workflow_manager = _get_enhanced_workflow_manager()
-
-            # Step 1: Try to detect a workflow template
-            detected_workflow, confidence, extracted_params = workflow_manager.detect_workflow_from_instruction(prompt)
+            logger.info(f"Parsing test instructions with Azure OpenAI: {prompt[:100]}...")
             
-            if detected_workflow and confidence > 0.7:
-                logger.info(f"📋 Detected workflow template: {detected_workflow} (confidence: {confidence:.1%})")
-            
-               # Merge extracted parameters with provided parameters
-                final_params = extracted_params.copy()
-                if url:
-                  final_params["cluster_ip"] = url.replace("https://", "").replace("http://", "").split("/")[0]
-                if username:
-                  final_params["username"] = username  
-                if password:
-                  final_params["password"] = password
-
+            # Try Azure OpenAI first
+            azure_client = _get_azure_openai_client()
+            if azure_client:
                 try:
-                   # Generate workflow from template
-                    template_result = workflow_manager.generate_workflow_from_template(
-                      detected_workflow, final_params
-                    )
-                                   
-                    # Convert to TestPlan format
+                    # Use Azure OpenAI for intelligent parsing
+                    ai_result = await azure_client.parse_test_instructions(prompt, url, username, password)
+                    
+                    # Convert AI result to our TestPlan format
                     test_plan = TestPlan(
-                       name=template_result["test_name"],
-                       description=template_result["description"], 
-                       steps=template_result["steps"]
+                        name=ai_result.get("test_name", f"Test Plan for {url or 'web application'}"),
+                        description=ai_result.get("description", prompt),
+                        steps=ai_result.get("steps", [])
                     )
-                
-                    parsing_method = f"Template: {detected_workflow}"
-                    workflow_type = detected_workflow
-                    template_confidence = confidence
-                
-                except ValueError as ve:
-                   logger.warning(f"⚠️ Template validation failed: {ve}")
-                   # Fallback to AI parsing
-                   test_plan, parsing_method, workflow_type, template_confidence = await _fallback_to_ai_parsing(
-                    prompt, url, username, password
-                   )
+                    
+                    logger.info("Successfully parsed instructions using Azure OpenAI")
+                    
+                except Exception as ai_error:
+                    logger.warning(f"Azure OpenAI parsing failed, using fallback: {ai_error}")
+                    # Fallback to basic parsing
+                    instruction = TestInstruction(
+                        prompt=prompt,
+                        url=url or "https://example.com",
+                        username=username or "demo_user",
+                        password=password or "demo_pass"
+                    )
+                    test_plan = await _parse_instructions_to_plan(instruction)
             else:
-                logger.info(f"🤖 No suitable template found (confidence: {confidence:.1%}), using AI parsing")
-                # Fallback to AI parsing
-                test_plan, parsing_method, workflow_type, template_confidence = await _fallback_to_ai_parsing(
-                prompt, url, username, password
+                # Fallback to basic parsing
+                logger.info("Using fallback parsing (Azure OpenAI not available)")
+                instruction = TestInstruction(
+                    prompt=prompt,
+                    url=url or "https://example.com",
+                    username=username or "demo_user",
+                    password=password or "demo_pass"
                 )
+                test_plan = await _parse_instructions_to_plan(instruction)
             
-            # Store in session with enhanced metadata
+            # Store in session - Store as dict consistently
             session_id = f"session_{len(_active_sessions) + 1}"
             _active_sessions[session_id] = {
-              "instruction": {
-                 "prompt": prompt,
-                 "url": url,
-                 "username": username,
-                 "password": password
-               },
-               "test_plan": test_plan.dict(),
-               "status": "planned",
-               "created_at": asyncio.get_event_loop().time(),
-               "parsing_method": parsing_method,
-               "workflow_type": workflow_type,
-               "confidence": template_confidence,
-               "template_based": detected_workflow is not None,
-               "hybrid_enhanced": True,
-               "browser_session": None,
-               "extracted_parameters": extracted_params
+                "instruction": {
+                    "prompt": prompt,
+                    "url": url,
+                    "username": username,
+                    "password": password
+                },
+                "test_plan": test_plan.dict(),
+                "status": "planned",
+                "created_at": asyncio.get_event_loop().time(),
+                "ai_powered": azure_client is not None,
+                "browser_session": None  # Will be created during execution
             }
             
-            logger.info(f"🎯 Successfully parsed {len(test_plan.steps)} steps using {parsing_method}")
+            logger.info(f"Successfully parsed instructions into {len(test_plan.steps)} steps")
             
             return {
-              "session_id": session_id,
-              "status": "success",
-              "test_plan": test_plan.dict(),
-              "parsing_method": parsing_method,
-              "workflow_type": workflow_type,
-              "confidence": template_confidence,
-              "template_based": detected_workflow is not None,
-              "hybrid_enhanced": True,
-              "browser_automation": True,
-              "extracted_parameters": extracted_params,
-              "message": f"🧠 Successfully parsed {len(test_plan.steps)} test steps using {parsing_method} (confidence: {template_confidence:.1%})"
+                "session_id": session_id,
+                "status": "success",
+                "test_plan": test_plan.dict(),
+                "ai_powered": azure_client is not None,
+                "browser_automation": True,
+                "message": f"Successfully parsed {len(test_plan.steps)} test steps using {'Azure OpenAI' if azure_client else 'fallback parser'}"
             }
             
         except Exception as e:
-            logger.error(f"❌ Error parsing instructions: {str(e)}")
+            logger.error(f"Error parsing instructions: {str(e)}")
             raise E2ETestingError(f"Failed to parse instructions: {str(e)}")
 
     @app.tool()
@@ -439,107 +413,6 @@ try:
                 "error": str(e),
                 "message": "❌ Browser automation test failed"
             }
-
-    @app.tool()
-    async def list_workflow_templates(category: str = "") -> Dict[str, Any]:
-        """List available workflow templates"""
-        try:
-            workflow_manager = _get_enhanced_workflow_manager()
-        
-            if category:
-               templates = workflow_manager.list_templates_by_category(category)
-            else:
-               templates = workflow_manager.list_templates()
-        
-            template_list = []
-            for name, template in templates.items():
-                template_info = {
-                   "name": name,
-                   "description": template.description,
-                   "category": template.category,
-                   "estimated_duration": template.estimated_duration,
-                   "parameters": list(template.parameters.keys()),
-                   "required_parameters": [
-                      param for param, config in template.parameters.items()
-                      if config.get("required", False)
-                    ],
-                    "steps_count": len(template.steps)
-                }
-                template_list.append(template_info)
-        
-            return {
-               "status": "success",
-               "templates": template_list,
-               "total_count": len(template_list),
-               "message": f"Found {len(template_list)} workflow templates"
-            }
-        
-        except Exception as e:
-            logger.error(f"❌ Error listing templates: {str(e)}")
-            raise E2ETestingError(f"Failed to list templates: {str(e)}")
-
-    @app.tool()
-    async def execute_workflow_template(
-        template_name: str,
-        parameters: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute a workflow template directly with provided parameters"""
-        try:
-            workflow_manager = _get_enhanced_workflow_manager()
-        
-            # Generate workflow from template
-            workflow_result = workflow_manager.generate_workflow_from_template(template_name, parameters)
-        
-            # Convert to TestPlan and execute
-            test_plan = TestPlan(
-               name=workflow_result["test_name"],
-               description=workflow_result["description"],
-               steps=workflow_result["steps"]
-            )
-        
-            # Store in session
-            session_id = f"template_session_{len(_active_sessions) + 1}"
-            _active_sessions[session_id] = {
-                "instruction": {
-                  "prompt": f"Execute template: {template_name}",
-                  "url": parameters.get("cluster_ip", ""),
-                  "username": parameters.get("username", ""),
-                  "password": parameters.get("password", "")
-                },
-                "test_plan": test_plan.dict(),
-                "status": "planned",
-                "created_at": asyncio.get_event_loop().time(),
-                "parsing_method": f"Direct Template: {template_name}",
-                "workflow_type": template_name,
-                "confidence": 1.0,
-                "template_based": True,
-                "hybrid_enhanced": True,
-                "browser_session": None,
-                "template_parameters": parameters
-            }
-        
-            # Execute the workflow
-            execution_result = await _execute_real_browser_workflow(test_plan, session_id)
-        
-            # Update session status
-            session = _active_sessions[session_id]
-            session["status"] = "completed" if execution_result.success else "failed"
-            session["execution_result"] = execution_result.dict()
-            session["completed_at"] = asyncio.get_event_loop().time()
-        
-            return {
-               "session_id": session_id,
-               "status": "success",
-               "template_name": template_name,
-               "execution_result": execution_result.dict(),
-               "parameters_used": parameters,
-               "template_based": True,
-               "message": f"🎯 Template '{template_name}' executed: {execution_result.steps_executed}/{execution_result.total_steps} steps completed"
-            }
-        
-        except Exception as e:
-            logger.error(f"❌ Error executing template: {str(e)}")
-            raise E2ETestingError(f"Failed to execute template: {str(e)}")    
 
     # Use FastMCP's built-in run method
     USE_FASTMCP = True
@@ -804,34 +677,6 @@ async def _parse_instructions_to_plan(instruction: TestInstruction) -> TestPlan:
         description=instruction.prompt,
         steps=steps
     )
-
-async def _fallback_to_ai_parsing(prompt: str, url: str, username: str, password: str) -> tuple:
-    """Fallback to AI parsing when template detection fails"""
-    
-    # Try Azure OpenAI first
-    azure_client = _get_azure_openai_client()
-    if azure_client:
-        try:
-            ai_result = await azure_client.parse_test_instructions(prompt, url, username, password)
-            test_plan = TestPlan(
-                name=ai_result.get("test_name", f"AI Generated Test Plan"),
-                description=ai_result.get("description", prompt),
-                steps=ai_result.get("steps", [])
-            )
-            return test_plan, "Azure OpenAI", "ai_generated", 0.8
-            
-        except Exception as ai_error:
-            logger.warning(f"⚠️ Azure OpenAI parsing failed: {ai_error}")
-    
-    # Fallback to basic parsing
-    instruction = TestInstruction(
-        prompt=prompt,
-        url=url or "https://example.com",
-        username=username or "demo_user",
-        password=password or "demo_pass"
-    )
-    test_plan = await _parse_instructions_to_plan(instruction)
-    return test_plan, "Fallback Parser", "basic", 0.5
 
 # =====================================
 # Cleanup on shutdown
