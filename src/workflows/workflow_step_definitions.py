@@ -18,7 +18,7 @@ class WorkflowStepDefinitions:
         
         definitions = {
             WorkflowType.LOGIN_ONLY: cls._get_login_only_definition(),
-            WorkflowType.GET_FABRIC: cls._get_fabric_definition(),
+            WorkflowType.GET_FABRIC: cls._get_get_fabric_definition(),
             WorkflowType.CREATE_FABRIC: cls._create_fabric_definition(),
             WorkflowType.MODIFY_FABRIC: cls._modify_fabric_definition(),
             WorkflowType.DELETE_FABRIC: cls._delete_fabric_definition(),
@@ -237,49 +237,72 @@ class WorkflowStepDefinitions:
             }
         }
     
-    @classmethod  
-    def _get_fabric_definition(cls) -> Dict[str, any]:
-        """get fabric workflow definition"""
+    @classmethod
+    def _get_get_fabric_definition(cls) -> Dict[str, any]:
+        """Get fabric workflow definition"""
         return {
-            "workflow_name": "get Network Fabric", 
-            "description": "Login and get an existing network fabric",
-            "timeout_per_step": 300000,
-            "retry_attempts": 3,
+            "workflow_name": "Get Fabric Information",
+            "description": "Login to network management system and retrieve fabric information and status",
+            "timeout_per_step": 120000,  # 2 minutes per step (reduced)
+            "retry_attempts": 2,  # Reduced retries
             "english_steps": [
                 # Login steps
-                "if not logged in Navigate to the login page at the provided URL",
-                "Wait for the login page to fully load and become interactive",
-                "Locate the username input field (look for input field with placeholder 'username', 'user', 'email' or similar)",
-                "Clear the username field and enter the provided username",
-                "Locate the password input field (look for input field with type 'password' or placeholder 'password')",
-                "Clear the password field and enter the provided password",
-                "Find the login button (look for button with text 'Login', 'Sign In', 'Submit', or similar)",
-                "Click the login button to submit the form",
-                "Wait for login to complete and page to redirect or refresh",
-                "Verify successful login by checking for welcome message, dashboard, or absence of login form",
-                "Take a screenshot to confirm successful login state"
-                
-                # Navigate and get
+                "Navigate to the network management system login page at the provided URL",
+                "Wait for the login page to fully load, including all CSS and JavaScript",
+                "Locate and fill the username field with the provided username",
+                "Locate and fill the password field with the provided password",
+                "Click the login button and wait for authentication to complete",
+                "Verify successful login and wait for the main dashboard to load and see the Welcome to Catalyst Center! text",
+            
+                # Navigate to fabric management
                 "Look for the main navigation menu (usually at top or left side)",
-                "Find and click on 'Provision' or similar menu item",
-                "then click on Fabric Sites under SDA Access to navigate to fabric dashoard page",
-                "Wait for the page to load completely",
-                "look for the heading 'Fabric Sites' and under that heading look for 'SUMMARY' and under that look at the count above Fabric Sites text",
-                "take a screenshot, then go ahead and click on the count above Fabric Sites text",
-                "it will navigate you to summarised Fabric Sites page there you should see a table with no footer",
-                "in the table look for column header name with Fabric Site text",
-                "under that column you should see the Fabric Name if that matches with provided fabric Name by user",
-                "then take the screenshot"
-                "Confirm Fabric exists and was found successfully"
+                "Find and click on 'Provision', or similar menu item",
+                "Under 'Provision' look for 'SD Access' option and inside that click on 'Fabric Sites' ",
+                "Wait for the fabric Sites page to load completely",
+                "Look for count of fabric Sites, under Fabric Sites SUMMARY section",
+            
+                # Get fabric information
+                "click on the count or number displayed under the 'SUMMARY' text for 'Fabric Sites'"
+                "wait for the page to load completely",
+                "If a specific fabric name is provided, look for that fabric in the table under column name 'Fabric Site'",
+                "If the name matches with provided name, take a screenshot",
+                "if it doesnt match then return whatever fabric Name is present",
+            
+                # Verify and capture information
+                "Verify that fabric information is displayed and accessible",
+                "Check for any error messages or connectivity issues",
+               "Take a screenshot of the fabric information for confirmation",
+               "Verify the get fabric operation completed successfully"
             ],
             "success_criteria": [
-                "Target fabric is found in the page",
-                "Fabric Sites count is 1",
-                "get process completes successfully", 
-                "Fabric Name is present on the page",
-                "No errors during deletion process"
-            ]
+               "Successfully login to the provided url",
+               "Navigate to fabric page section without errors",
+               "Fabric information page loads and displays fabric data",
+               "Fabric details are visible and accessible",
+               "No critical error messages during fabric information retrieval",
+               "Operation completes within reasonable time"
+            ],
+            "common_selectors_guidance": [
+               "Fabric menu: a:contains('Fabric'), button:contains('Fabric'), [data-*='fabric'], nav a[href*='fabric']",
+               "Fabric list: .fabric-list, .fabric-table, table[data-*='fabric'], .fabric-grid",
+               "Fabric details: .fabric-details, .fabric-info, .details-panel, .info-panel",
+               "Error messages: .error, .alert-danger, .error-message, [data-*='error']"
+            ],
+            "error_handling": [
+               "If fabric list is empty, verify system has fabrics configured",
+               "If specific fabric not found, list all available fabrics instead",
+               "If fabric information times out, check network connectivity and system load",
+               "If navigation fails, look for alternative menu paths or refresh page",
+               "If access denied, verify user permissions for fabric viewing"
+            ],
+            "parameters": {
+               "url": "Network management system URL",
+               "username": "Login username",
+               "password": "Login password",
+               "fabric_name": "Name of specific fabric to get (optional, defaults to 'all')"
+            }
         }
+    
     
     @classmethod
     def _create_fabric_definition(cls) -> Dict[str, any]:

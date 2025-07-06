@@ -49,7 +49,7 @@ class AzureOpenAIClient:
                 "Authorization": f"Basic {value}"
             }
             
-            logger.debug("Fetching access token from Azure IDP")
+            logger.info("Fetching access token from Azure IDP")
             token_response = requests.post(self.config.idp_endpoint, headers=headers, data=payload)
             
             if token_response.status_code != 200:

@@ -55,166 +55,139 @@ class ActionExecutor:
             }
     
     async def _navigate(self, url: str, step: Dict[str, Any]) -> Dict[str, Any]:
-        """Navigate to URL with SSL error handling and retries"""
-        try:
-            logger.info(f"Navigating to: {url}")
-            
-            # Navigation with SSL bypass and retries
-            navigation_options = {
-                "wait_until": "networkidle",
-                "timeout": 45000  # Increased timeout for SSL handshakes
-            }
-            
-            max_retries = 3
-            last_error = None
-            
-            for attempt in range(max_retries):
-                try:
-                    await self.page.goto(url, **navigation_options)
-                    break  # Success, exit retry loop
-                    
-                except PlaywrightError as e:
-                    error_message = str(e).lower()
-                    last_error = e
-                    
-                    # Handle SSL-specific errors
-                    if any(ssl_term in error_message for ssl_term in [
-                        'ssl', 'certificate', 'tls', 'handshake', 'cert', 'x509'
-                    ]):
-                        logger.warning(f"SSL error on attempt {attempt + 1}/{max_retries}: {e}")
-                        
-                        if attempt < max_retries - 1:
-                            # Try different wait strategies
-                            if attempt == 1:
-                                navigation_options["wait_until"] = "domcontentloaded"
-                            elif attempt == 2:
-                                navigation_options["wait_until"] = "load"
-                            
-                            await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                            continue
-                    
-                    # Handle network errors
-                    elif any(net_term in error_message for net_term in [
-                        'net::', 'network', 'timeout', 'connection', 'refused'
-                    ]):
-                        logger.warning(f"Network error on attempt {attempt + 1}/{max_retries}: {e}")
-                        
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(3)  # Network recovery delay
-                            continue
-                    
-                    # Non-recoverable error
-                    logger.error(f"Non-recoverable navigation error: {e}")
-                    raise
-            
-            else:
-                # All retries exhausted
-                raise last_error
-            
-            # Wait for page to stabilize after navigation
+       """Navigate to URL with SSL error handling and retries - Fixed port handling"""
+       try:
+          # Ensure URL is properly formatted and preserve port
+          original_url = url
+          if url and not url.startswith(('http://', 'https://')):
+             url = f'https://{url}'
+        
+          # Ensure URL ends with / if it has a port
+          if ':443' in url and not url.endswith('/'):
+             url = url + '/'
+          elif ':80' in url and not url.endswith('/'):
+             url = url + '/'
+        
+          logger.info(f"Navigating to: {url} (original: {original_url})")
+        
+          # Reduced navigation options to prevent timeouts
+          navigation_options = {
+            "wait_until": "domcontentloaded",  # Changed from networkidle
+            "timeout": 60000  # 1 minute timeout
+          }
+        
+          max_retries = 2  # Reduced from 3
+          last_error = None
+        
+          for attempt in range(max_retries):
             try:
-                await self.page.wait_for_load_state("networkidle", timeout=10000)
-            except:
-                # Fallback if networkidle fails
-                await asyncio.sleep(2)
-            
-            # Verify navigation
-            current_url = self.page.url
-            title = await self.page.title()
-            
-            # Check if we ended up on an SSL error page
-            page_content = await self.page.content()
-            ssl_error_indicators = [
-                "ssl error", "certificate error", "not secure", "privacy error",
-                "net::err_cert", "ssl_error", "your connection is not private",
-                "proceed to", "advanced", "not private"
-            ]
-            
-            is_ssl_error_page = any(indicator in page_content.lower() for indicator in ssl_error_indicators)
-            
-            if is_ssl_error_page:
-                logger.warning(f"Detected SSL error page for {url}, attempting to proceed")
+                logger.info(f"Navigation attempt {attempt + 1}/{max_retries} to: {url}")
+                await self.page.goto(url, **navigation_options)
                 
-                # Try to click through SSL warning if present
-                ssl_proceed_selectors = [
-                    "#proceed-button",
-                    "#proceed-link", 
-                    "[data-test-id='proceed-link']",
-                    "button:has-text('Proceed')",
-                    "a:has-text('Advanced')",
-                    "button:has-text('Advanced')",
-                    "#advanced-button",
-                    "a:has-text('Continue')",
-                    "button:has-text('Continue')",
-                    "a:has-text('Proceed to')",
-                    "#details-button",
-                    "#proceed-to-unsafe",
-                    ".proceed-link",
-                    "[data-test='proceed-button']"
-                ]
+                # Verify we actually navigated to the URL with port
+                current_url = self.page.url
+                logger.info(f"Navigation completed to: {current_url}")
+                break  # Success, exit retry loop
                 
-                proceeded = False
-                for selector in ssl_proceed_selectors:
-                    try:
-                        proceed_element = self.page.locator(selector)
-                        if await proceed_element.count() > 0:
-                            logger.info(f"Clicking SSL proceed button: {selector}")
-                            await proceed_element.click()
-                            await asyncio.sleep(3)  # Wait for navigation
-                            
-                            # Check if navigation proceeded
-                            new_content = await self.page.content()
-                            current_url_after_proceed = self.page.url
-                            
-                            if (not any(indicator in new_content.lower() for indicator in ssl_error_indicators) or
-                                current_url_after_proceed != current_url):
-                                logger.info("Successfully proceeded through SSL warning")
-                                proceeded = True
-                                break
-                    except Exception as click_error:
-                        logger.debug(f"Could not click {selector}: {click_error}")
+            except PlaywrightError as e:
+                error_message = str(e).lower()
+                last_error = e
+                
+                # Handle SSL-specific errors
+                if any(ssl_term in error_message for ssl_term in [
+                    'ssl', 'certificate', 'tls', 'handshake', 'cert', 'x509'
+                ]):
+                    logger.warning(f"SSL error on attempt {attempt + 1}/{max_retries}: {e}")
+                    
+                    if attempt < max_retries - 1:
+                        # Try different wait strategy
+                        navigation_options["wait_until"] = "load"
+                        await asyncio.sleep(3)
                         continue
                 
-                # If we couldn't proceed automatically, that's still OK - the page loaded
-                if not proceeded:
-                    logger.info("SSL warning page detected but couldn't auto-proceed - continuing anyway")
+                # Handle network errors  
+                elif any(net_term in error_message for net_term in [
+                    'net::', 'network', 'timeout', 'connection', 'refused'
+                ]):
+                    logger.warning(f"Network error on attempt {attempt + 1}/{max_retries}: {e}")
+                    
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(5)
+                        continue
+                
+                # Non-recoverable error
+                logger.error(f"Non-recoverable navigation error: {e}")
+                raise
+        
+          else:
+            # All retries exhausted
+            raise last_error
+        
+          # Simplified page stabilization
+          try:
+            await self.page.wait_for_load_state("domcontentloaded", timeout=15000)
+          except:
+            await asyncio.sleep(3)  # Fallback wait
+        
+          # Get final page state
+          current_url = self.page.url
+          title = await self.page.title()
+        
+          logger.info(f"Final navigation state - URL: {current_url}, Title: {title}")
+        
+          # Simplified SSL error handling
+          page_content = await self.page.content()
+          ssl_error_indicators = [
+            "your connection is not private", "privacy error", 
+            "certificate error", "ssl error", "not secure"
+          ]
+        
+          is_ssl_error_page = any(indicator in page_content.lower() for indicator in ssl_error_indicators)
+        
+          if is_ssl_error_page:
+            logger.warning(f"Detected SSL error page for {url}, attempting to proceed")
             
-            # Final verification
-            final_url = self.page.url
-            final_title = await self.page.title()
+            # Try to proceed through SSL warning
+            ssl_proceed_selectors = [
+                "#proceed-link", "#advanced-button", 
+                "button:has-text('Advanced')", "a:has-text('Proceed')"
+            ]
             
-            return {
-                "status": "success",
-                "message": f"Successfully navigated to {url}",
-                "initial_url": url,
-                "current_url": final_url,
-                "page_title": final_title,
-                "ssl_warning_handled": is_ssl_error_page,
-                "execution_time_ms": 3000  # Approximate navigation time
-            }
-            
-        except Exception as e:
-            error_message = str(e)
-            logger.error(f"Navigation failed for {url}: {error_message}")
-            
-            # Provide specific error handling for common SSL issues
-            if any(ssl_term in error_message.lower() for ssl_term in [
-                'ssl', 'certificate', 'tls', 'handshake', 'cert', 'x509'
-            ]):
-                return {
-                    "status": "failed",
-                    "message": f"SSL/TLS error navigating to {url}: {error_message}",
-                    "error_details": error_message,
-                    "error_type": "ssl_error",
-                    "suggestion": "The target site may have SSL certificate issues. Browser SSL bypass is configured but the error persisted."
-                }
-            else:
-                return {
-                    "status": "failed",
-                    "message": f"Failed to navigate to {url}: {error_message}",
-                    "error_details": error_message,
-                    "error_type": "navigation_error"
-                }
+            for selector in ssl_proceed_selectors:
+                try:
+                    proceed_element = self.page.locator(selector)
+                    if await proceed_element.count() > 0:
+                        logger.info(f"Clicking SSL proceed: {selector}")
+                        await proceed_element.click()
+                        await asyncio.sleep(5)
+                        break
+                except Exception:
+                    continue
+        
+          # Final verification
+          final_url = self.page.url
+          final_title = await self.page.title()
+        
+          return {
+            "status": "success",
+            "message": f"Successfully navigated to {url}",
+            "initial_url": url,
+            "current_url": final_url,
+            "page_title": final_title,
+            "ssl_warning_handled": is_ssl_error_page,
+            "port_preserved": ":443" in final_url or ":80" in final_url
+          }
+        
+       except Exception as e:
+        error_message = str(e)
+        logger.error(f"Navigation failed for {url}: {error_message}")
+        
+        return {
+            "status": "failed",
+            "message": f"Failed to navigate to {url}: {error_message}",
+            "error_details": error_message,
+            "initial_url": url
+        }
     
     async def _click(self, target: str, locator_strategy: str, step: Dict[str, Any]) -> Dict[str, Any]:
         """Click element with enhanced error handling"""

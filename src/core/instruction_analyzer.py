@@ -99,9 +99,20 @@ class InstructionAnalyzer:
             WorkflowType.GET_FABRIC: [
                 r'\bget\s+fabric\b',
                 r'\bfetch\s+fabric\b',
-                r'\bpresent\s+fabric\b',
-                r'\bfabric\s+exists\b'
-            ],
+                r'\bretrieve\s+fabric\b',
+                r'\bview\s+fabric\b',
+                r'\bshow\s+fabric\b',
+                r'\blist\s+fabric\b',
+                r'\bfabric\s+details\b',
+                r'\bfabric\s+info\b',
+                r'\bfabric\s+status\b',
+                r'\bget\s+fabric\s+site\b', 
+                r'\bget\s+fabric\s+with\s+name\b',
+                r'\bget\s+fabric\s+.*\s+name\b',
+                r'\bget\s+fabric\s+(?:site|info|details|status)\b',  
+                r'\bfetch\s+fabric\s+(?:site|info|details)\b', 
+                r'\btest\s+get\s+fabric\b'
+           ],
             WorkflowType.CREATE_FABRIC: [
                 r'\bcreate\s+fabric\b',
                 r'\bfabric\s+workflow\b',
@@ -259,33 +270,35 @@ class InstructionAnalyzer:
                     description="Device filter criteria"
                 )
             ],
-             WorkflowType.GET_FABRIC: [
-                # Login + fabric get parameters
-                WorkflowParameter(
-                    name="url",
-                    required=True,
-                    param_type="string",
-                    description="Target server URL"
-                ),
-                WorkflowParameter(
-                    name="username",
-                    required=True,
-                    param_type="string",
-                    description="Login username"
-                ),
-                WorkflowParameter(
-                    name="password",
-                    required=True,
-                    param_type="string",
-                    description="Login password"
-                ),
-                WorkflowParameter(
-                    name="fabric_name",
-                    required=True,
-                    param_type="string",
-                    description="Name of fabric to get"
-                )
-            ],
+            WorkflowType.GET_FABRIC: [
+    # Login parameters (required)
+    WorkflowParameter(
+        name="url",
+        required=True,
+        param_type="string",
+        description="Target server URL"
+    ),
+    WorkflowParameter(
+        name="username",
+        required=True,
+        param_type="string",
+        description="Login username"
+    ),
+    WorkflowParameter(
+        name="password",
+        required=True,
+        param_type="string",
+        description="Login password"
+    ),
+    # Fabric parameters (optional - get all fabrics if not specified)
+    WorkflowParameter(
+        name="fabric_name",
+        required=False,  # CHANGED FROM True TO False
+        param_type="string",
+        default_value="all",  # Default to get all fabrics
+        description="Name of specific fabric to get (optional, defaults to 'all')"
+    )
+],
             WorkflowType.CREATE_FABRIC: [
                 # Login parameters (required for fabric creation)
                 WorkflowParameter(
@@ -661,6 +674,8 @@ class InstructionAnalyzer:
             params.update(self._extract_site_hierarchy_params(instruction))
         elif workflow_type == WorkflowType.INVENTORY_PROVISION:
             params.update(self._extract_inventory_provision_params(instruction))
+        elif workflow_type == WorkflowType.GET_FABRIC:
+            params.update(self._extract_get_fabric_params(instruction))
         
         return params
     
@@ -670,18 +685,22 @@ class InstructionAnalyzer:
         
         # URL extraction (IP:port or domain)
         url_patterns = [
-            r'(?:https?://)?([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(?::[0-9]+)?)',
-            r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?::[0-9]+)?)',
-            r'on\s+([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(?::[0-9]+)?)',
-            r'at\s+([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(?::[0-9]+)?)'
+           r'(?:https?://)?([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(?::[0-9]+)?)',
+           r'(?:https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?::[0-9]+)?)',
+           r'on\s+([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(?::[0-9]+)?)',
+           r'at\s+([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(?::[0-9]+)?)',
+           r'to\s+(https?://[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(?::[0-9]+)?/?)',  
+           r'from\s+(https?://[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(?::[0-9]+)?/?)', 
+           r'(https://[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(?::[0-9]+)?/?)',
         ]
         
         for pattern in url_patterns:
             match = re.search(pattern, instruction)
             if match:
                 url = match.group(1)
+                # Ensure URL has protocol
                 if not url.startswith(('http://', 'https://')):
-                    url = f"https://{url}"
+                  url = f"https://{url}"
                 params["url"] = url
                 break
         
@@ -1003,3 +1022,33 @@ class InstructionAnalyzer:
             help_info["parameters"].append(param_info)
         
         return help_info
+    
+    def _extract_get_fabric_params(self, instruction: str) -> Dict[str, Any]:
+        """Extract get fabric specific parameters"""
+        params = {}
+    
+        # Enhanced fabric name extraction with quoted strings
+        fabric_patterns = [
+        r'name\s*["\']([^"\']+)["\']',           
+        r'name\s*["\']([^"\']+)["\']',          
+        r'fabric\s+name\s*[-:=]\s*["\']([^"\']+)["\']',
+        r'fabric\s*[-:=]\s*["\']([^"\']+)["\']',
+        r'get\s+fabric\s+([a-zA-Z0-9_/-]+)',
+        r'fabric\s+([a-zA-Z0-9_/-]+)\s+(?:to|from|at)',
+        r'with\s+name\s*["\']([^"\']+)["\']'  
+        ]
+    
+        for pattern in fabric_patterns:
+            match = re.search(pattern, instruction, re.IGNORECASE)
+            if match:
+               fabric_name = match.group(1).strip()
+               # Skip common words that aren't fabric names
+               if fabric_name.lower() not in ['site', 'info', 'details', 'status', 'from', 'to', 'at']:
+                   params["fabric_name"] = fabric_name
+                   break
+    
+        # If no specific fabric name found, set default
+        if "fabric_name" not in params:
+            params["fabric_name"] = "all"
+    
+        return params

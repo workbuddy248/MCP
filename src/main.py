@@ -67,6 +67,7 @@ def _get_azure_openai_client():
         try:
             from src.ai.azure_openai_client import AzureOpenAIClient
             config = settings.get_azure_openai_config()
+            logger.info("config - {config}")
             _azure_openai_client = AzureOpenAIClient(config)
             logger.info("Azure OpenAI client initialized successfully")
         except Exception as e:
@@ -954,10 +955,44 @@ async def _generate_basic_workflow_steps(workflow_type: WorkflowType, params: Di
                 "value": "dashboard",
                 "description": "Verify successful login",
                 "locator_strategy": "text",
-                "expected_result": "User is authenticated and on dashboard",
+                "expected_result": "Welcome to Catalyst Center!",
                 "timeout": 300000,
                 "retry_count": 3
             }
+        ])
+    
+    elif workflow_type == WorkflowType.GET_FABRIC:
+        steps.extend([
+           {
+                "action": "click",
+                "target": "fabric menu",
+                "value": "",
+                "description": "Navigate to fabric management section",
+                "locator_strategy": "text",
+                "expected_result": "Fabric management page opens",
+                "timeout": 120000,
+                "retry_count": 2
+           },
+           {
+            "action": "wait",
+            "target": "fabric list",
+            "value": "5",
+            "description": "Wait for fabric list to load",
+            "locator_strategy": "auto",
+            "expected_result": "Fabric list is visible",
+            "timeout": 60000,
+            "retry_count": 2
+           },
+           {
+            "action": "verify",
+            "target": "fabric information",
+            "value": "fabric",
+            "description": "Verify fabric information is displayed",
+            "locator_strategy": "text",
+            "expected_result": "Fabric data visible on page",
+            "timeout": 30000,
+            "retry_count": 2
+           }
         ])
     
     return TestPlan(
